@@ -29,12 +29,12 @@ def load_doc(file_path: str) -> str:
     return text
 
 
-def load_doc_from_api(meeting_id: int, doc_type:str , temp_dir: str = "downloads") -> dict:
+def load_doc_from_api(meeting_id: int, doc_type:str) -> dict:
     """
     Fetches documents using shared logic, saves them, and helps extract text.
     Handles multiple documents by concatenating their text.
     """
-    from backend.services.document_processor import fetch_documents_from_service
+    from backend.services.document_processor import fetch_documents_from_service, save_single_document_to_disk
     try:
         docs = fetch_documents_from_service(meeting_id, doc_type)
         if not docs:
@@ -44,15 +44,9 @@ def load_doc_from_api(meeting_id: int, doc_type:str , temp_dir: str = "downloads
         combined_text = []
         file_names = []
         
-        Path(temp_dir).mkdir(parents=True, exist_ok=True)
-
         for doc in docs:
-            # Save locally
-            random_name = f"{uuid.uuid4().hex}_{doc['filename']}"
-            local_path = os.path.join(temp_dir, random_name)
-            
-            with open(local_path, "wb") as f:
-                f.write(doc['bytes'])
+            # Save locally using shared logic
+            local_path, _ = save_single_document_to_disk(doc)
             
             file_names.append(doc['filename'])
 
