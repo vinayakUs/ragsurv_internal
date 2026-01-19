@@ -1,0 +1,38 @@
+########################
+# IntelliJ / PyCharm
+########################
+.idea/
+*.iml
+*.ipr
+*.iws
+
+########################
+# Python bytecode / cache
+########################
+__pycache__/
+*.py[cod]
+*$py.class
+
+########################
+# PyCharm / Python tools
+########################
+.pytest_cache/
+.mypy_cache/
+.pytype/
+.pyre/
+.pychange/
+pychange.log
+
+########################
+# Virtual environments
+########################
+venv/
+.venv/
+env/
+ENV/
+
+########################
+# OS files
+########################
+.DS_Store
+Thumbs.db
