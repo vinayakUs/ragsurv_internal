@@ -21,12 +21,16 @@ from backend.services.structured_logger import get_structured_logger, get_reques
 logger = logging.getLogger(__name__)
 slog = get_structured_logger("streaming")
 
-# Configuration - optimized for single-GPU/CPU Ollama
-# MAX_PARALLEL_CHUNKS: Keep low (1-2) since Ollama queues requests internally
-# CHUNK_TIMEOUT_SECONDS: Higher timeout since LLM calls take 20-60s each
-MAX_PARALLEL_CHUNKS = int(os.getenv("MAX_PARALLEL_CHUNKS", "2"))
+# Configuration for parallel/sequential processing
+# ENABLE_PARALLEL_CHUNK_PROCESSING: Set to 'false' to revert to sequential mode
+ENABLE_PARALLEL_CHUNK_PROCESSING = os.getenv("ENABLE_PARALLEL_CHUNK_PROCESSING", "true").lower() == "true"
+
+# MAX_PARALLEL_CHUNKS: Number of chunks to process concurrently per query
+# With load balancing: each worker can process this many chunks in parallel
+# Recommended: 2-4 for single Ollama, 4-8 for load-balanced Ollama cluster
+MAX_PARALLEL_CHUNKS = int(os.getenv("MAX_PARALLEL_CHUNKS", "3"))
 CHUNK_TIMEOUT_SECONDS = int(os.getenv("CHUNK_TIMEOUT_SECONDS", "120"))
-MAX_WORKERS = int(os.getenv("STREAMING_EXECUTOR_WORKERS", "4"))
+MAX_WORKERS = int(os.getenv("STREAMING_EXECUTOR_WORKERS", "8"))
 
 # Thread pool for LLM processing (CPU-bound via network)
 _streaming_executor = None
@@ -61,9 +65,20 @@ def process_chunk_group_sync(
     try:
         start_time = time.time()
         
-        # Sort chunks by weighted score
-        chunk_group.sort(key=lambda x: x.get("weighted_score", 0.0), reverse=True)
-        top_chunks = chunk_group[:8]  
+        # ULTRA-FAST MODE for first chunk: prioritize small, high-quality chunks
+        if chunk_index == 0:
+            # Sort by composite score: high quality + small size = faster processing
+            # Formula: (weighted_score * 1000) - (text_length * 0.1)
+            # This ensures we get high-quality chunks that are also small
+            chunk_group.sort(
+                key=lambda x: x.get("weighted_score", 0) * 1000 - len(x.get("text", "")) * 0.1,
+                reverse=True
+            )
+            top_chunks = chunk_group[:2]  # Only 2 best small chunks for speed
+        else:
+            # Quality mode: standard sorting
+            chunk_group.sort(key=lambda x: x.get("weighted_score", 0.0), reverse=True)
+            top_chunks = chunk_group[:5]  # 5 chunks for quality
         
         # Prepare text for LLM
         chunk_texts = [
@@ -80,8 +95,9 @@ def process_chunk_group_sync(
                 "processing_time": 0.0
             }
         
-        # Generate answer using LLM
-        answer_text = answer_from_chunks(chunk_texts, query)
+        # Generate answer using LLM (prioritize first chunk for speed)
+        is_first = (chunk_index == 0)
+        answer_text = answer_from_chunks(chunk_texts, query, is_first_chunk=is_first)
         
         # Build source documents
         source_documents: List[str] = []
@@ -183,6 +199,93 @@ async def process_chunk_async(
         }
 
 
+async def process_chunks_parallel_streaming_v2(
+    chunk_groups: List[tuple],
+    query: str,
+    max_parallel: int = None
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """
+    Process chunk groups in PARALLEL with controlled concurrency.
+    
+    This enables true parallel processing where multiple chunks are sent to the LLM
+    simultaneously, controlled by a semaphore to prevent overload.
+    
+    Args:
+        chunk_groups: List of (group_key, chunks) tuples
+        query: User query string
+        max_parallel: Maximum concurrent chunks (defaults to MAX_PARALLEL_CHUNKS)
+    
+    Yields:
+        Dict with chunk_index, status, result as each completes (unordered)
+    """
+    if not chunk_groups:
+        return
+    
+    total_chunks = len(chunk_groups)
+    max_parallel = max_parallel or MAX_PARALLEL_CHUNKS
+    
+    slog.info("PARALLEL_START", total_chunks=total_chunks, max_parallel=max_parallel)
+    start_time = time.time()
+    
+    # Semaphore to limit concurrent chunk processing
+    semaphore = asyncio.Semaphore(max_parallel)
+    
+    async def process_with_semaphore(idx: int, group_key: str, chunks: List[Dict]) -> Dict[str, Any]:
+        """Process a single chunk with semaphore control."""
+        async with semaphore:
+            slog.info("CHUNK_START", chunk=idx, total=total_chunks)
+            result = await process_chunk_async(chunks, query, idx)
+            return result
+    
+    # Create tasks for all chunks
+    tasks = [
+        process_with_semaphore(idx, group_key, chunks)
+        for idx, (group_key, chunks) in enumerate(chunk_groups)
+    ]
+    
+    # Process chunks in parallel and yield results as they complete
+    completed = 0
+    for coro in asyncio.as_completed(tasks):
+        try:
+            result = await coro
+            completed += 1
+            
+            # Add progress metadata
+            result["progress_info"] = {
+                "completed": completed,
+                "total": total_chunks,
+                "remaining": total_chunks - completed,
+                "mode": "parallel"
+            }
+            
+            yield result
+            
+        except Exception as e:
+            slog.exception("PARALLEL_CHUNK_ERROR", error=str(e)[:50])
+            completed += 1
+            yield {
+                "chunk_index": -1,
+                "status": "error",
+                "error": str(e),
+                "result": None,
+                "progress_info": {
+                    "completed": completed,
+                    "total": total_chunks,
+                    "remaining": total_chunks - completed,
+                    "mode": "parallel"
+                }
+            }
+    
+    total_time = time.time() - start_time
+    slog.info(
+        "PARALLEL_COMPLETE",
+        total_chunks=total_chunks,
+        duration_ms=total_time*1000,
+        avg_per_chunk_ms=(total_time/total_chunks)*1000 if total_chunks > 0 else 0,
+        speedup_vs_sequential=f"{(total_chunks * 30 / total_time):.1f}x" if total_time > 0 else "N/A"
+    )
+
+
 async def process_chunks_sequential_streaming(
     chunk_groups: List[tuple],  # List of (group_key, chunk_list) tuples
     query: str
@@ -237,19 +340,29 @@ async def process_chunks_sequential_streaming(
               avg_per_chunk_ms=(total_time/total_chunks)*1000 if total_chunks > 0 else 0)
 
 
-# Keep the old function name as an alias for backward compatibility
+# Smart routing function - chooses parallel or sequential based on config
 async def process_chunks_parallel_streaming(
     chunk_groups: List[tuple],
     query: str,
     max_parallel: int = None
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
-    Backward-compatible wrapper - now processes sequentially.
-    The max_parallel parameter is ignored (always processes one at a time).
+    Process chunks using parallel or sequential mode based on configuration.
+    
+    Checks ENABLE_PARALLEL_CHUNK_PROCESSING environment variable:
+    - true: Uses parallel processing (process_chunks_parallel_streaming_v2)
+    - false: Uses sequential processing (process_chunks_sequential_streaming)
+    
+    This provides backward compatibility and easy rollback via environment variable.
     """
-    # Ignore max_parallel - always process sequentially
-    async for result in process_chunks_sequential_streaming(chunk_groups, query):
-        yield result
+    if ENABLE_PARALLEL_CHUNK_PROCESSING:
+        slog.info("PROCESSING_MODE", mode="parallel", max_parallel=max_parallel or MAX_PARALLEL_CHUNKS)
+        async for result in process_chunks_parallel_streaming_v2(chunk_groups, query, max_parallel):
+            yield result
+    else:
+        slog.info("PROCESSING_MODE", mode="sequential")
+        async for result in process_chunks_sequential_streaming(chunk_groups, query):
+            yield result
 
 
 def format_sse_event(data: Dict[str, Any], event_type: str = "chunk") -> str:
@@ -285,22 +398,31 @@ async def create_streaming_response(
     Yields:
         SSE event strings with queue information
     """
-    slog.info("STREAM_START", total_chunks=len(chunk_groups), mode="sequential")
+    processing_mode = "parallel" if ENABLE_PARALLEL_CHUNK_PROCESSING else "sequential"
+    slog.info("STREAM_START", total_chunks=len(chunk_groups), mode=processing_mode)
     
     total_chunks = len(chunk_groups)
     processed = 0
     successful = 0
     
     # Send initial event with total count and processing mode
+    processing_mode = "parallel" if ENABLE_PARALLEL_CHUNK_PROCESSING else "sequential"
+    mode_message = (
+        f"Processing {total_chunks} chunk(s) in parallel (max {MAX_PARALLEL_CHUNKS} concurrent)"
+        if ENABLE_PARALLEL_CHUNK_PROCESSING
+        else f"Processing {total_chunks} chunk(s) sequentially"
+    )
+    
     yield format_sse_event({
         "type": "start",
         "total_chunks": total_chunks,
         "query": query,
-        "processing_mode": "sequential",
+        "processing_mode": processing_mode,
+        "max_parallel": MAX_PARALLEL_CHUNKS if ENABLE_PARALLEL_CHUNK_PROCESSING else 1,
         "queue_info": {
             "total": total_chunks,
-            "mode": "one_at_a_time",
-            "message": f"Processing {total_chunks} chunk(s) sequentially"
+            "mode": processing_mode,
+            "message": mode_message
         }
     }, "start")
     

@@ -49,7 +49,7 @@ def _get_reranker() -> Optional[Union[object, bool]]:
         try:
             from sentence_transformers import CrossEncoder
             import os
-            _reranker = CrossEncoder(os.getenv("RERANKER_MODEL_PATH","/mnt/desv/backend/ms-marco-MiniLM-L-6-v2"))
+            _reranker = CrossEncoder(os.getenv("RERANKER_MODEL_PATH","/mnt/dev/backend/ms-marco-MiniLM-L-6-v2"))
             # _reranker = CrossEncoder("/mnt/dev/backend/ms-marco-MiniLM-L-6-v2")
             logger.info("âœ… CrossEncoder initialized successfully.")
         except Exception as e:
