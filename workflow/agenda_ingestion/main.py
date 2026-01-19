@@ -40,7 +40,10 @@ def run_agenda_extraction(meeting_id: str):
         result = graph.invoke({"meeting_id": meeting_id})
         
         if result.get("error"):
-            logger.error(f"❌ Workflow finished with error: {result['error']}")
+            # RAISE exception so scheduler catches it
+            error_msg = f"Workflow finished with error: {result['error']}"
+            logger.error(f"❌ {error_msg}")
+            raise Exception(error_msg)
         else:
             logger.info(f"✅ Agenda extraction completed successfully for {meeting_id}")
             logger.info(f"Extracted Items: {result.get('agenda_items')}")
@@ -49,7 +52,8 @@ def run_agenda_extraction(meeting_id: str):
         
     except Exception as e:
         logger.exception(f"❌ Critical failure for {meeting_id}: {e}")
-        return None
+        # RE-RAISE exception so scheduler catches it
+        raise e
 
 if __name__ == "__main__":
     # Default to a sample ID if not provided
@@ -60,8 +64,7 @@ if __name__ == "__main__":
     
     meeting_id = args.meeting_id
     
-        
-    run_agenda_extraction(meeting_id)
-
-
-
+    try:
+        run_agenda_extraction(meeting_id)
+    except Exception as e:
+        print(f"Execution failed: {e}")

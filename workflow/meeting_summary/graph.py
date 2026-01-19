@@ -1,4 +1,3 @@
-
 # from typing import TypedDict, List, Dict, Any
 # from langgraph.graph import StateGraph, END
 # from tools.oracle_client import OracleClient
@@ -298,7 +297,7 @@ def compile_final_json_step(state: SummaryState) -> dict:
 # =====================================================
 # DB SAVE HELPER
 # =====================================================
-def save_meeting_summary(meeting_id: int, summary_payload: dict) -> None:
+def save_meeting_summary(meeting_id: int, summary_payload: dict,meeting_name:str) -> None:
     client = OracleClient()
     summary_json = json.dumps(summary_payload, ensure_ascii=False)
 
@@ -306,26 +305,30 @@ def save_meeting_summary(meeting_id: int, summary_payload: dict) -> None:
         MERGE INTO MEETING_SUMMARY_SURV tgt
         USING (
             SELECT :meeting_id AS meeting_id,
-                   :summary_json AS summary_json
+                   :summary_json AS summary_json,
+                   :meeting_name as meeting_name
             FROM dual
         ) src
         ON (tgt.meeting_id = src.meeting_id)
         WHEN MATCHED THEN
             UPDATE SET
                 tgt.summary_json = src.summary_json,
+                tgt.meeting_name = src.meeting_name,
                 tgt.updated_at = SYSTIMESTAMP
         WHEN NOT MATCHED THEN
             INSERT (
                 meeting_id,
                 summary_json,
                 created_at,
-                updated_at
+                updated_at,
+                meeting_name
             )
             VALUES (
                 src.meeting_id,
                 src.summary_json,
                 SYSTIMESTAMP,
-                SYSTIMESTAMP
+                SYSTIMESTAMP,
+                src.meeting_name
             )
     """
 
@@ -334,7 +337,8 @@ def save_meeting_summary(meeting_id: int, summary_payload: dict) -> None:
         merge_sql,
         {
             "meeting_id": meeting_id,
-            "summary_json": summary_json
+            "summary_json": summary_json,
+            "meeting_name" :meeting_name 
         }
     )
     logger.info(f"[{meeting_id}] Meeting summary saved successfully")
@@ -350,7 +354,7 @@ def save_to_db_step(state: SummaryState) -> SummaryState:
     if not final_json:
         raise RuntimeError("final_json_output missing before DB save")
 
-    save_meeting_summary(state["meeting_id"], final_json)
+    save_meeting_summary(state["meeting_id"], final_json,state["meeting_data"]["meeting_name"])
     return state
 
 

@@ -45,8 +45,7 @@ def run_summary_workflow(meeting_id: int):
         final_output = result.get("final_json_output", {})
         
         if not final_output:
-            logger.error("No output generated!")
-            return None
+            raise Exception("No output generated!")
 
         # Save report to JSON file - REMOVED as per user request
         # filename = f"meeting_{meeting_id}_deep_summary.json"
@@ -56,7 +55,7 @@ def run_summary_workflow(meeting_id: int):
         
     except Exception as e:
         logger.error(f"Critical error in summary runner: {e}", exc_info=True)
-        return None
+        raise e
 
 def main():
     parser = argparse.ArgumentParser(description="Generate Deep Meeting Summary")
@@ -65,14 +64,18 @@ def main():
     
     meeting_id = args.meeting_id
     
-    output = run_summary_workflow(meeting_id)
-    
-    if output:
-        print("\n" + "="*50)
-        print("GENERATION SUCCESSFUL")
-        print("General Section Preview:")
-        print(output.get("general_section", "")[:300] + "...")
-        print("="*50 + "\n")
+    try:
+        output = run_summary_workflow(meeting_id)
+        
+        if output:
+            print("\n" + "="*50)
+            print("GENERATION SUCCESSFUL")
+            print("General Section Preview:")
+            print(output.get("general_section", "")[:300] + "...")
+            print("="*50 + "\n")
+    except Exception as e:
+        print(f"Summary generation failed: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

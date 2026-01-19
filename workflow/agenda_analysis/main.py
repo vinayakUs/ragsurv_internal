@@ -54,7 +54,9 @@ def run_analysis_workflow(meeting_id):
         result = graph.invoke(initial_state)
         
         if result.get("error"):
-            logger.error(f"Analysis failed: {result['error']}")
+            error_msg = f"Analysis failed: {result['error']}"
+            logger.error(error_msg)
+            raise Exception(error_msg)
         else:
             logger.info(f"Analysis completed successfully for {meeting_id}")
             
@@ -62,7 +64,7 @@ def run_analysis_workflow(meeting_id):
             
     except Exception as e:
         logger.error(f"Critical error in runner: {e}", exc_info=True)
-        return None
+        raise e
 
 def main():
     parser = argparse.ArgumentParser(description="Run Agenda Analysis Workflow")
@@ -70,7 +72,10 @@ def main():
     args = parser.parse_args()
 
     meeting_id = args.meeting_id
-    run_analysis_workflow(meeting_id)
+    try:
+        run_analysis_workflow(meeting_id)
+    except Exception as e:
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

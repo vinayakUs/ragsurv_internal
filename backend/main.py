@@ -913,7 +913,7 @@ def get_meeting_summaries(
         data = [
             {
                 "meeting_id": row.get("meeting_id"),
-                "meeting_name": row.get("MEETING_NAME"),
+                "meeting_name": row.get("meeting_name"),
                 "created_at": row.get("created_at"),
                 "updated_at": row.get("updated_at"),
             }
