@@ -850,6 +850,89 @@ def get_monthly_meeting_count():
     return rows
 
 
+from fastapi import Query, HTTPException
+
+@app.get("/meetings/summary")
+def get_meeting_summaries(
+    page: int | None = Query(None, ge=1),
+    limit: int | None = Query(None, ge=1),
+):
+    """
+    Fetch meeting summaries from meeting_summary_surv.
+
+    Response format:
+    {
+      "page": 1,
+      "limit": 10,
+      "count": 10,
+      "total": 123,
+      "data": [...]
+    }
+    """
+
+    # Enforce correct pagination usage
+    if (page is None) != (limit is None):
+        raise HTTPException(
+            status_code=400,
+            detail="Both page and limit must be provided together",
+        )
+
+    try:
+        # Total count query (always executed)
+        count_query = """
+            SELECT COUNT(*) AS total
+            FROM meeting_summary_surv
+        """
+        total_rows = execute_query(count_query)
+        logger.info(total_rows)
+        total = total_rows[0]["total"]
+
+        if page is not None and limit is not None:
+            offset = (page - 1) * limit
+            data_query = """
+                SELECT meeting_id, MEETING_NAME, created_at, updated_at
+                FROM meeting_summary_surv
+                ORDER BY meeting_id ASC
+                OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY
+            """
+            rows = execute_query(
+                data_query,
+                {"offset": offset, "limit": limit},
+            )
+        else:
+            # No pagination → return all
+            data_query = """
+                SELECT meeting_id, MEETING_NAME, created_at, updated_at
+                FROM meeting_summary_surv
+                ORDER BY meeting_id ASC
+            """
+            rows = execute_query(data_query)
+            page = 1
+            limit = len(rows)
+
+        data = [
+            {
+                "meeting_id": row.get("meeting_id"),
+                "meeting_name": row.get("MEETING_NAME"),
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+            }
+            for row in rows
+        ]
+
+        return {
+            "page": page,
+            "limit": limit,
+            "count": len(data),
+            "total": total,
+            "data": data,
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching meeting summaries: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch meeting summaries")
+
+
 @app.get("/meetings/summary/{meeting_id}")
 def get_monthly_meeting_count(meeting_id:str):
     query = """
